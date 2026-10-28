@@ -1,243 +1,217 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { format, subDays } from "date-fns";
+import { format } from "date-fns";
 import { uk } from "date-fns/locale";
-import { supabase, Participant } from "@/lib/supabase";
+import { supabase, Participant, Checkin } from "@/lib/supabase";
 
-type YesterdayCheckin = {
+type StatusItem = {
   id: string;
   name: string;
-  checked_at: string;
+  done: boolean;
+  checkedAt: string | null;
 };
 
-export default function AdminPage() {
-  const [password, setPassword] = useState("");
-  const [isAuth, setIsAuth] = useState(false);
-  const [participants, setParticipants] = useState<Participant[]>([]);
-  const [yesterdayCheckins, setYesterdayCheckins] = useState<YesterdayCheckin[]>([]);
-  const [newName, setNewName] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [cleanupMsg, setCleanupMsg] = useState("");
+export default function HomePage() {
+  const [items, setItems] = useState<StatusItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedId, setSelectedId] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
-  const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD || "admin123";
+  const today = format(new Date(), "yyyy-MM-dd");
+  const todayNice = format(new Date(), "d MMMM yyyy", { locale: uk });
 
-  const yesterday = format(subDays(new Date(), 1), "yyyy-MM-dd");
-  const yesterdayNice = format(subDays(new Date(), 1), "d MMMM", { locale: uk });
-  const twoDaysAgo = format(subDays(new Date(), 2), "yyyy-MM-dd");
+  async function loadData() {
+    setLoading(true);
+    try {
+      const { data: participants, error: pError } = await supabase
+        .from("participants")
+        .select("*")
+        .order("name");
+
+      if (pError) throw pError;
+
+      const { data: checkins, error: cError } = await supabase
+        .from("checkins")
+        .select("*")
+        .eq("check_date", today);
+
+      if (cError) throw cError;
+
+      const checkinMap = new Map<string, Checkin>();
+      (checkins || []).forEach((c) => checkinMap.set(c.participant_id, c));
+
+      const status: StatusItem[] = (participants || []).map((p: Participant) => {
+        const checkin = checkinMap.get(p.id);
+        return {
+          id: p.id,
+          name: p.name,
+          done: !!checkin,
+          checkedAt: checkin ? checkin.checked_at : null,
+        };
+      });
+
+      setItems(status);
+    } catch (err: any) {
+      console.error(err);
+      setMessage({ type: "error", text: "Помилка завантаження даних" });
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    const saved = localStorage.getItem("admin_auth");
-    if (saved === "true") {
-      setIsAuth(true);
-      loadAll();
-    }
+    loadData();
+    const interval = setInterval(loadData, 30000);
+    return () => clearInterval(interval);
   }, []);
 
-  async function loadAll() {
-    setLoading(true);
-    await Promise.all([loadParticipants(), loadYesterday(), cleanupOldRecords()]);
-    setLoading(false);
-  }
+  async function handleCheckin() {
+    if (!selectedId) {
+      setMessage({ type: "error", text: "Оберіть своє ім'я" });
+      return;
+    }
 
-  async function loadParticipants() {
-    const { data, error } = await supabase
-      .from("participants")
-      .select("*")
-      .order("name");
+    setSubmitting(true);
+    setMessage(null);
 
-    if (error) {
-      setError("Помилка завантаження учасників");
-    } else {
-      setParticipants(data || []);
+    try {
+      const { data: existing } = await supabase
+        .from("checkins")
+        .select("id")
+        .eq("participant_id", selectedId)
+        .eq("check_date", today)
+        .maybeSingle();
+
+      if (existing) {
+        setMessage({ type: "error", text: "Ви вже відмітилися сьогодні 👍" });
+        setSubmitting(false);
+        return;
+      }
+
+      const { error } = await supabase.from("checkins").insert({
+        participant_id: selectedId,
+        check_date: today,
+        checked_at: new Date().toISOString(),
+      });
+
+      if (error) throw error;
+
+      setMessage({ type: "success", text: "Успішно відмічено! Дякую 🔥" });
+      setSelectedId("");
+      await loadData();
+    } catch (err: any) {
+      console.error(err);
+      setMessage({ type: "error", text: "Не вдалося відмітити. Спробуй ще раз." });
+    } finally {
+      setSubmitting(false);
     }
   }
 
-  async function loadYesterday() {
-    const { data, error } = await supabase
-      .from("checkins")
-      .select(`
-        id,
-        checked_at,
-        participants (
-          name
-        )
-      `)
-      .eq("check_date", yesterday)
-      .order("checked_at");
-
-    if (!error && data) {
-      const list: YesterdayCheckin[] = data.map((item: any) => ({
-        id: item.id,
-        name: item.participants?.name || "Невідомий",
-        checked_at: item.checked_at,
-      }));
-      setYesterdayCheckins(list);
-    }
-  }
-
-  async function cleanupOldRecords() {
-    const { error, count } = await supabase
-      .from("checkins")
-      .delete({ count: "exact" })
-      .lt("check_date", twoDaysAgo);
-
-    if (!error && count && count > 0) {
-      setCleanupMsg(`Автоматично видалено ${count} старих записів`);
-    }
-  }
-
-  function handleLogin(e: React.FormEvent) {
-    e.preventDefault();
-    if (password === ADMIN_PASSWORD) {
-      setIsAuth(true);
-      localStorage.setItem("admin_auth", "true");
-      loadAll();
-      setError("");
-    } else {
-      setError("Невірний пароль");
-    }
-  }
-
-  async function addParticipant(e: React.FormEvent) {
-    e.preventDefault();
-    if (!newName.trim()) return;
-
-    const { error } = await supabase.from("participants").insert({
-      name: newName.trim(),
-    });
-
-    if (error) {
-      setError("Не вдалося додати");
-    } else {
-      setNewName("");
-      loadParticipants();
-    }
-  }
-
-  async function removeParticipant(id: string) {
-    if (!confirm("Видалити учасника?")) return;
-
-    const { error } = await supabase.from("participants").delete().eq("id", id);
-    if (!error) {
-      loadParticipants();
-    }
-  }
-
-  function logout() {
-    setIsAuth(false);
-    localStorage.removeItem("admin_auth");
-  }
-
-  if (!isAuth) {
-    return (
-      <main className="max-w-sm mx-auto px-4 py-16">
-        <h1 className="text-xl font-bold text-center mb-6">Адмін-панель</h1>
-        <form onSubmit={handleLogin} className="bg-white rounded-2xl border p-6 shadow-sm">
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Пароль"
-            className="w-full border border-slate-300 rounded-xl px-4 py-3 mb-4 focus:outline-none focus:ring-2 focus:ring-green-500"
-          />
-          <button
-            type="submit"
-            className="w-full bg-slate-800 text-white font-semibold py-3 rounded-xl"
-          >
-            Увійти
-          </button>
-          {error && <p className="text-red-600 text-sm text-center mt-3">{error}</p>}
-        </form>
-      </main>
-    );
-  }
+  const doneCount = items.filter((i) => i.done).length;
+  const total = items.length;
 
   return (
     <main className="max-w-lg mx-auto px-4 py-8">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-xl font-bold">Адмін-панель</h1>
-        <button onClick={logout} className="text-sm text-slate-500 underline">
-          Вийти
-        </button>
+      <div className="text-center mb-8">
+        <h1 className="text-2xl font-bold text-slate-800">Чат Активу</h1>
+        <p className="text-slate-500 mt-1">{todayNice}</p>
+        <div className="mt-3 inline-flex items-center gap-2 bg-white border border-slate-200 rounded-full px-4 py-1.5 text-sm font-medium shadow-sm">
+          <span className="text-green-600">{doneCount}</span>
+          <span className="text-slate-400">/</span>
+          <span>{total}</span>
+          <span className="text-slate-500">виконали</span>
+        </div>
       </div>
 
-      {cleanupMsg && (
-        <div className="mb-4 text-sm text-green-700 bg-green-50 rounded-lg px-3 py-2">
-          {cleanupMsg}
-        </div>
-      )}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 mb-6">
+        <h2 className="font-semibold text-slate-800 mb-3">Відмітитися за сьогодні</h2>
 
-      <section className="mb-8">
-        <h2 className="font-semibold text-slate-800 mb-3">Учасники</h2>
+        <select
+          value={selectedId}
+          onChange={(e) => setSelectedId(e.target.value)}
+          className="w-full border border-slate-300 rounded-xl px-4 py-3 text-base mb-4 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+        >
+          <option value="">Обери своє ім'я...</option>
+          {items.map((item) => (
+            <option key={item.id} value={item.id} disabled={item.done}>
+              {item.name} {item.done ? "✓" : ""}
+            </option>
+          ))}
+        </select>
 
-        <form onSubmit={addParticipant} className="flex gap-2 mb-4">
-          <input
-            type="text"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            placeholder="Ім'я учасника"
-            className="flex-1 border border-slate-300 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-green-500"
-          />
-          <button
-            type="submit"
-            className="bg-green-600 text-white font-medium px-5 rounded-xl hover:bg-green-700"
+        <button
+          onClick={handleCheckin}
+          disabled={submitting || !selectedId}
+          className="w-full bg-green-600 hover:bg-green-700 disabled:bg-slate-300 text-white font-semibold py-3.5 rounded-xl transition-colors text-base"
+        >
+          {submitting ? "Зберігаю..." : "Виконав актив на сьогодні ✓"}
+        </button>
+
+        {message && (
+          <div
+            className={`mt-4 text-center text-sm font-medium rounded-lg py-2 px-3 ${
+              message.type === "success"
+                ? "bg-green-50 text-green-700"
+                : "bg-red-50 text-red-700"
+            }`}
           >
-            Додати
-          </button>
-        </form>
+            {message.text}
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="px-5 py-3 border-b border-slate-100 bg-slate-50">
+          <h2 className="font-semibold text-slate-800">Статус на сьогодні</h2>
+        </div>
 
         {loading ? (
-          <p className="text-center text-slate-400">Завантаження...</p>
+          <div className="p-8 text-center text-slate-400">Завантаження...</div>
+        ) : items.length === 0 ? (
+          <div className="p-8 text-center text-slate-400">
+            Учасників ще немає.
+            <br />
+            <a href="/admin" className="text-green-600 underline text-sm">
+              Додати в адмінці
+            </a>
+          </div>
         ) : (
-          <ul className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100 overflow-hidden">
-            {participants.map((p) => (
-              <li key={p.id} className="flex items-center justify-between px-4 py-3">
-                <span className="font-medium">{p.name}</span>
-                <button
-                  onClick={() => removeParticipant(p.id)}
-                  className="text-red-500 text-sm hover:underline"
-                >
-                  Видалити
-                </button>
+          <ul className="divide-y divide-slate-100">
+            {items.map((item) => (
+              <li key={item.id} className="flex items-center justify-between px-5 py-3.5">
+                <div className="flex items-center gap-3">
+                  <div
+                    className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
+                      item.done
+                        ? "bg-green-100 text-green-700"
+                        : "bg-slate-100 text-slate-400"
+                    }`}
+                  >
+                    {item.done ? "✓" : "–"}
+                  </div>
+                  <span className={`font-medium ${item.done ? "text-slate-800" : "text-slate-500"}`}>
+                    {item.name}
+                  </span>
+                </div>
+                <div className="text-sm text-slate-400">
+                  {item.done && item.checkedAt
+                    ? format(new Date(item.checkedAt), "HH:mm")
+                    : "—"}
+                </div>
               </li>
             ))}
-            {participants.length === 0 && (
-              <li className="px-4 py-8 text-center text-slate-400">Поки немає учасників</li>
-            )}
           </ul>
         )}
-      </section>
-
-      <section>
-        <h2 className="font-semibold text-slate-800 mb-3">
-          Відмітки за вчора ({yesterdayNice})
-        </h2>
-
-        <ul className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100 overflow-hidden">
-          {yesterdayCheckins.length === 0 ? (
-            <li className="px-4 py-8 text-center text-slate-400">
-              Вчора ніхто не відмічався
-            </li>
-          ) : (
-            yesterdayCheckins.map((item) => (
-              <li key={item.id} className="flex items-center justify-between px-4 py-3">
-                <span className="font-medium">{item.name}</span>
-                <span className="text-sm text-slate-400">
-                  {format(new Date(item.checked_at), "HH:mm")}
-                </span>
-              </li>
-            ))
-          )}
-        </ul>
-      </section>
-
-      <div className="mt-8 text-center">
-        <a href="/" className="text-green-600 underline text-sm">
-          ← На головну
-        </a>
       </div>
+
+      <p className="text-center text-xs text-slate-400 mt-8">
+        Адмін-панель:{" "}
+        <a href="/admin" className="underline hover:text-slate-600">
+          /admin
+        </a>
+      </p>
     </main>
   );
 }
