@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { format } from "date-fns";
 import { uk } from "date-fns/locale";
 import { supabase, Participant, Checkin } from "@/lib/supabase";
+import { getLogicalDate } from "@/lib/date-utils";
 
 type StatusItem = {
   id: string;
@@ -19,7 +20,7 @@ export default function HomePage() {
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
-  const today = format(new Date(), "yyyy-MM-dd");
+  const today = getLogicalDate(); // день починається о 03:00
   const todayNice = format(new Date(), "d MMMM yyyy", { locale: uk });
 
   async function loadData() {
