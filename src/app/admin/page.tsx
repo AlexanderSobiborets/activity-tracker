@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { format, subDays } from "date-fns";
 import { uk } from "date-fns/locale";
 import { supabase, Participant } from "@/lib/supabase";
+import { getLogicalDate, getLogicalYesterday } from "@/lib/date-utils";
 
 type YesterdayCheckin = {
   id: string;
@@ -23,7 +24,7 @@ export default function AdminPage() {
 
   const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD || "admin123";
 
-  const yesterday = format(subDays(new Date(), 1), "yyyy-MM-dd");
+  const yesterday = getLogicalYesterday();
   const yesterdayNice = format(subDays(new Date(), 1), "d MMMM", { locale: uk });
   const twoDaysAgo = format(subDays(new Date(), 2), "yyyy-MM-dd");
 
@@ -154,6 +155,9 @@ export default function AdminPage() {
     );
   }
 
+  const totalParticipants = participants.length;
+  const yesterdayDone = yesterdayCheckins.length;
+
   return (
     <main className="max-w-lg mx-auto px-4 py-8">
       <div className="flex items-center justify-between mb-6">
@@ -169,6 +173,7 @@ export default function AdminPage() {
         </div>
       )}
 
+      {/* Учасники */}
       <section className="mb-8">
         <h2 className="font-semibold text-slate-800 mb-3">Учасники</h2>
 
@@ -210,10 +215,18 @@ export default function AdminPage() {
         )}
       </section>
 
+      {/* Історія за вчора */}
       <section>
-        <h2 className="font-semibold text-slate-800 mb-3">
-          Відмітки за вчора ({yesterdayNice})
-        </h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-semibold text-slate-800">
+            Відмітки за вчора ({yesterdayNice})
+          </h2>
+          <div className="text-sm font-medium bg-slate-100 px-3 py-1 rounded-full">
+            <span className="text-green-600">{yesterdayDone}</span>
+            <span className="text-slate-400"> / </span>
+            <span>{totalParticipants}</span>
+          </div>
+        </div>
 
         <ul className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100 overflow-hidden">
           {yesterdayCheckins.length === 0 ? (
@@ -221,9 +234,13 @@ export default function AdminPage() {
               Вчора ніхто не відмічався
             </li>
           ) : (
-            yesterdayCheckins.map((item) => (
+            yesterdayCheckins.map((item, index) => (
               <li key={item.id} className="flex items-center justify-between px-4 py-3">
-                <span className="font-medium">{item.name}</span>
+                <div className="flex items-center gap-3">
+                  <span className="text-slate-400 text-sm w-6">{index + 1}.</span>
+                  <span className="font-medium">{item.name}</span>
+                  <span className="text-green-600 font-bold">✓</span>
+                </div>
                 <span className="text-sm text-slate-400">
                   {format(new Date(item.checked_at), "HH:mm")}
                 </span>
