@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { format } from "date-fns";
 import { uk } from "date-fns/locale";
 import { supabase, Participant, Checkin } from "@/lib/supabase";
-import { getLogicalDate } from "@/lib/date-utils";
+import { getLogicalDate, getLogicalYesterday } from "@/lib/date-utils";
 
 type StatusItem = {
   id: string;
@@ -19,9 +19,14 @@ export default function HomePage() {
   const [selectedId, setSelectedId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [selectedDay, setSelectedDay] = useState<"today" | "yesterday">("today");
 
-  const today = getLogicalDate(); // день починається о 03:00
+  const today = getLogicalDate();
+  const yesterday = getLogicalYesterday();
+  const activeDate = selectedDay === "today" ? today : yesterday;
+
   const todayNice = format(new Date(), "d MMMM yyyy", { locale: uk });
+  const yesterdayNice = format(new Date(Date.now() - 86400000), "d MMMM", { locale: uk });
 
   async function loadData() {
     setLoading(true);
@@ -36,7 +41,7 @@ export default function HomePage() {
       const { data: checkins, error: cError } = await supabase
         .from("checkins")
         .select("*")
-        .eq("check_date", today);
+        .eq("check_date", activeDate);
 
       if (cError) throw cError;
 
@@ -66,7 +71,7 @@ export default function HomePage() {
     loadData();
     const interval = setInterval(loadData, 30000);
     return () => clearInterval(interval);
-  }, []);
+  }, [selectedDay]); // перезавантажуємо при зміні дня
 
   async function handleCheckin() {
     if (!selectedId) {
@@ -78,28 +83,39 @@ export default function HomePage() {
     setMessage(null);
 
     try {
+      // Перевіряємо, чи вже є відмітка за вибраний день
       const { data: existing } = await supabase
         .from("checkins")
         .select("id")
         .eq("participant_id", selectedId)
-        .eq("check_date", today)
+        .eq("check_date", activeDate)
         .maybeSingle();
 
       if (existing) {
-        setMessage({ type: "error", text: "Ви вже відмітилися сьогодні 👍" });
+        setMessage({
+          type: "error",
+          text: selectedDay === "today"
+            ? "Ви вже відмітилися сьогодні 👍"
+            : "Ви вже відмітилися за вчора 👍",
+        });
         setSubmitting(false);
         return;
       }
 
       const { error } = await supabase.from("checkins").insert({
         participant_id: selectedId,
-        check_date: today,
+        check_date: activeDate,
         checked_at: new Date().toISOString(),
       });
 
       if (error) throw error;
 
-      setMessage({ type: "success", text: "Успішно відмічено! Дякую 🔥" });
+      setMessage({
+        type: "success",
+        text: selectedDay === "today"
+          ? "Успішно відмічено за сьогодні! Дякую 🔥"
+          : "Успішно відмічено за вчора! Дякую 🔥",
+      });
       setSelectedId("");
       await loadData();
     } catch (err: any) {
@@ -115,19 +131,53 @@ export default function HomePage() {
 
   return (
     <main className="max-w-lg mx-auto px-4 py-8">
-      <div className="text-center mb-8">
+      <div className="text-center mb-6">
         <h1 className="text-2xl font-bold text-slate-800">Чат Активу</h1>
         <p className="text-slate-500 mt-1">{todayNice}</p>
-        <div className="mt-3 inline-flex items-center gap-2 bg-white border border-slate-200 rounded-full px-4 py-1.5 text-sm font-medium shadow-sm">
+      </div>
+
+      {/* Перемикач Сьогодні / Вчора */}
+      <div className="flex bg-slate-100 rounded-xl p-1 mb-6">
+        <button
+          onClick={() => setSelectedDay("today")}
+          className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+            selectedDay === "today"
+              ? "bg-white text-slate-800 shadow-sm"
+              : "text-slate-500"
+          }`}
+        >
+          Сьогодні
+        </button>
+        <button
+          onClick={() => setSelectedDay("yesterday")}
+          className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+            selectedDay === "yesterday"
+              ? "bg-white text-slate-800 shadow-sm"
+              : "text-slate-500"
+          }`}
+        >
+          Вчора
+        </button>
+      </div>
+
+      <div className="text-center mb-6">
+        <div className="inline-flex items-center gap-2 bg-white border border-slate-200 rounded-full px-4 py-1.5 text-sm font-medium shadow-sm">
           <span className="text-green-600">{doneCount}</span>
           <span className="text-slate-400">/</span>
           <span>{total}</span>
-          <span className="text-slate-500">виконали</span>
+          <span className="text-slate-500">
+            {selectedDay === "today" ? "виконали сьогодні" : "виконали вчора"}
+          </span>
         </div>
       </div>
 
+      {/* Форма відмітки */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 mb-6">
-        <h2 className="font-semibold text-slate-800 mb-3">Відмітитися за сьогодні</h2>
+        <h2 className="font-semibold text-slate-800 mb-3">
+          {selectedDay === "today"
+            ? "Відмітитися за сьогодні"
+            : `Відмітитися за вчора (${yesterdayNice})`}
+        </h2>
 
         <select
           value={selectedId}
@@ -147,7 +197,11 @@ export default function HomePage() {
           disabled={submitting || !selectedId}
           className="w-full bg-green-600 hover:bg-green-700 disabled:bg-slate-300 text-white font-semibold py-3.5 rounded-xl transition-colors text-base"
         >
-          {submitting ? "Зберігаю..." : "Виконав актив на сьогодні ✓"}
+          {submitting
+            ? "Зберігаю..."
+            : selectedDay === "today"
+            ? "Виконав актив на сьогодні ✓"
+            : "Виконав актив вчора ✓"}
         </button>
 
         {message && (
@@ -163,9 +217,12 @@ export default function HomePage() {
         )}
       </div>
 
+      {/* Список статусів */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="px-5 py-3 border-b border-slate-100 bg-slate-50">
-          <h2 className="font-semibold text-slate-800">Статус на сьогодні</h2>
+          <h2 className="font-semibold text-slate-800">
+            Статус {selectedDay === "today" ? "на сьогодні" : "за вчора"}
+          </h2>
         </div>
 
         {loading ? (
